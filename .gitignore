@@ -1,0 +1,23 @@
+# Thumbnails cache
+.thumbnails/
+
+# Database
+photos.db
+test_photos.db
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# Streamlit
+.streamlit/
+
+# Test scripts
+verify.py
+.test_thumbs/
+
+# OS
+.DS_Store
+Thumbs.db
