@@ -3,6 +3,7 @@ import os
 import pandas as pd
 from logic.scanner import ImageScanner
 from logic.processor import ImageProcessor
+from logic.exporter import PhotoExporter
 
 st.set_page_config(
     page_title="PhotoSort AI • Offline",
@@ -337,7 +338,7 @@ if df.empty:
 # ══════════════════════════════════════════════════════════════════
 # TABS
 # ══════════════════════════════════════════════════════════════════
-tab1, tab2, tab3 = st.tabs(["  📊 Statystyki  ", "  🖼️ Galeria  ", "  🔍 Podobne zdjęcia  "])
+tab1, tab2, tab3, tab4 = st.tabs(["  📊 Statystyki  ", "  🖼️ Galeria  ", "  🔍 Podobne zdjęcia  ", "  📤 Eksport  "])
 
 # ── TAB 1: STATYSTYKI ─────────────────────────────────────────────
 with tab1:
@@ -470,3 +471,195 @@ with tab3:
                             item['date_taken'], item['width'], item['height'],
                             item['file_size_mb'], item['camera_model']
                         )
+
+# ── TAB 4: EKSPORT ────────────────────────────────────────────────
+with tab4:
+    st.markdown("""
+    <p style="color:#94a3b8; font-size:0.9rem; margin-bottom:20px;">
+        Skopiuj lub przenieś zdjęcia do nowej struktury folderów wg wybranej strategii.
+        Rekomendujemy <b>Kopiowanie</b> — oryginały pozostają nienaruszone.
+    </p>
+    """, unsafe_allow_html=True)
+
+    # ── Konfiguracja eksportu ──────────────────────────────────
+    cfg_col, preview_col = st.columns([1, 1], gap="large")
+
+    with cfg_col:
+        st.markdown("### ⚙️ Konfiguracja")
+
+        # Strategia
+        strategy = st.radio(
+            "**Strategia sortowania:**",
+            options=["📅 Według daty", "🖼️ Według typu pliku", "📷 Według aparatu"],
+            index=0
+        )
+
+        # Dodatkowe opcje dla daty
+        granularity = "rok/miesiąc"
+        if strategy == "📅 Według daty":
+            granularity = st.select_slider(
+                "Głębokość podziału:",
+                options=["rok", "rok/miesiąc", "rok/miesiąc/dzień"],
+                value="rok/miesiąc"
+            )
+
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        # Tryb: kopiuj / przenieś
+        mode = st.radio(
+            "**Tryb operacji:**",
+            options=["📋 Kopiuj (bezpieczne)", "✂️ Przenieś (oryginały znikają)"],
+            index=0
+        )
+        mode_key = "copy" if "Kopiuj" in mode else "move"
+
+        if mode_key == "move":
+            st.warning("⚠️ Tryb **Przenieś** jest nieodwracalny! Upewnij się, że masz kopię zapasową.")
+
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        # Folder docelowy
+        st.markdown("**📂 Folder docelowy:**")
+        if st.button("🗂️ Wybierz folder wyjściowy…", use_container_width=True, type="secondary"):
+            try:
+                import tkinter as tk
+                from tkinter import filedialog
+                root = tk.Tk(); root.withdraw()
+                root.wm_attributes("-topmost", True)
+                sel = filedialog.askdirectory(title="Wybierz folder docelowy eksportu")
+                root.destroy()
+                if sel:
+                    st.session_state.export_dir = os.path.normpath(sel)
+            except Exception as e:
+                st.warning(f"Dialog niedostępny: {e}")
+
+        if "export_dir" not in st.session_state:
+            st.session_state.export_dir = os.path.join(os.path.expanduser("~"), "Pictures", "PhotoSort_Eksport")
+
+        export_dir_input = st.text_input("", value=st.session_state.export_dir, label_visibility="collapsed", key="export_dir_text")
+        if export_dir_input != st.session_state.export_dir:
+            st.session_state.export_dir = export_dir_input
+
+    with preview_col:
+        st.markdown("### 🗺️ Podgląd struktury")
+
+        # Generuj podgląd struktury na żywo
+        preview_lines = []
+        sample = df.head(8)
+
+        if strategy == "📅 Według daty":
+            MONTHS_PL = {
+                "01":"01_Styczeń","02":"02_Luty","03":"03_Marzec","04":"04_Kwiecień",
+                "05":"05_Maj","06":"06_Czerwiec","07":"07_Lipiec","08":"08_Sierpień",
+                "09":"09_Wrzesień","10":"10_Październik","11":"11_Listopad","12":"12_Grudzień"
+            }
+            seen = set()
+            for _, row in sample.iterrows():
+                date = str(row.get("date_taken", ""))
+                if date and date != "None" and len(date) >= 7:
+                    year = date[:4]
+                    month = MONTHS_PL.get(date[5:7], date[5:7])
+                    day = date[8:10] if len(date) >= 10 else "01"
+                    if granularity == "rok":
+                        path_str = f"📁 {year}/"
+                    elif granularity == "rok/miesiąc":
+                        path_str = f"📁 {year}/{month}/"
+                    else:
+                        path_str = f"📁 {year}/{month}/{day}/"
+                else:
+                    path_str = "📁 Nieznana_data/"
+                if path_str not in seen:
+                    seen.add(path_str)
+                    preview_lines.append(path_str)
+                preview_lines.append(f"  └─ 🖼️ {row['filename']}")
+
+        elif strategy == "🖼️ Według typu pliku":
+            from pathlib import Path as P
+            TYPE_MAP = {".jpg":"JPG",".jpeg":"JPG",".png":"PNG",".webp":"WEBP",
+                        ".raw":"RAW",".cr2":"RAW",".nef":"RAW",".dng":"RAW",".heic":"HEIC"}
+            seen = set()
+            for _, row in sample.iterrows():
+                ext = P(row["filename"]).suffix.lower()
+                grp = TYPE_MAP.get(ext, "Inne")
+                folder_line = f"📁 {grp}/"
+                if folder_line not in seen:
+                    seen.add(folder_line)
+                    preview_lines.append(folder_line)
+                preview_lines.append(f"  └─ 🖼️ {row['filename']}")
+
+        else:  # aparat
+            seen = set()
+            for _, row in sample.iterrows():
+                cam = str(row.get("camera_model","")).strip() or "Nieznany_aparat"
+                if cam in ("Unknown","None",""): cam = "Nieznany_aparat"
+                cam = cam[:25]
+                folder_line = f"📁 {cam}/"
+                if folder_line not in seen:
+                    seen.add(folder_line)
+                    preview_lines.append(folder_line)
+                preview_lines.append(f"  └─ 🖼️ {row['filename']}")
+
+        preview_lines.append("  ⋮ (i więcej…)")
+        preview_text = "\n".join(preview_lines)
+
+        st.markdown(f"""
+        <div style="
+            background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.07);
+            border-radius: 12px; padding: 16px; font-family: monospace;
+            font-size: 0.8rem; color: #94a3b8; line-height: 1.8;
+            max-height: 320px; overflow-y: auto;">
+            <b style="color:#6366f1;">📂 {os.path.basename(st.session_state.export_dir) or 'Eksport'}/</b><br>
+            {preview_text.replace(chr(10), '<br>')}
+        </div>
+        """, unsafe_allow_html=True)
+
+        st.markdown(f'<p style="color:#64748b; font-size:0.75rem; margin-top:8px;">Zaindeksowanych zdjęć do przetworzenia: <b style="color:#a5b4fc;">{len(df)}</b></p>', unsafe_allow_html=True)
+
+    # ── Przycisk EKSPORT ───────────────────────────────────────
+    st.markdown("<br>", unsafe_allow_html=True)
+    st.markdown("---")
+
+    ex_col1, ex_col2, ex_col3 = st.columns([1, 2, 1])
+    with ex_col2:
+        do_export = st.button(
+            f"{'📋 Kopiuj' if mode_key == 'copy' else '✂️ Przenieś'} {len(df)} zdjęć → {os.path.basename(st.session_state.export_dir) or 'Eksport'}",
+            use_container_width=True,
+            type="primary"
+        )
+
+    if do_export:
+        if not st.session_state.export_dir:
+            st.error("Wybierz folder docelowy!")
+        else:
+            exporter = PhotoExporter(mode=mode_key)
+            progress = st.progress(0, text="Przygotowanie…")
+
+            try:
+                if strategy == "📅 Według daty":
+                    progress.progress(10, text="Sortuję wg daty…")
+                    results = exporter.export_by_date(df, st.session_state.export_dir, granularity)
+
+                elif strategy == "🖼️ Według typu pliku":
+                    progress.progress(10, text="Sortuję wg typu pliku…")
+                    results = exporter.export_by_type(df, st.session_state.export_dir)
+
+                else:
+                    progress.progress(10, text="Sortuję wg aparatu…")
+                    results = exporter.export_by_camera(df, st.session_state.export_dir)
+
+                progress.progress(100, text="✅ Gotowe!")
+
+                ok    = results.get("ok", 0)
+                error = results.get("error", 0)
+
+                if ok > 0:
+                    st.success(f"✅ Przetworzono **{ok}** zdjęć → `{st.session_state.export_dir}`")
+                if error > 0:
+                    st.warning(f"⚠️ {error} zdjęć nie udało się przetworzyć (brak uprawnień lub uszkodzone pliki).")
+
+                import time; time.sleep(0.5)
+                progress.empty()
+
+            except Exception as e:
+                progress.empty()
+                st.error(f"Błąd podczas eksportu: {e}")
